@@ -1,0 +1,54 @@
+# Example configuration for audio latency measurements
+measurements:
+  - name: "call_start_latency"
+    enabled: true
+    
+    signature_rules:
+      # PxL to filter telephony traffic
+      stream_filter: |
+        df = px.DataFrame(table='socket_data', start_time='10s')
+        df = df[df.pod_name.contains('telephony')]
+        df = df[df.remote_port == 15000]  # Your audio port
+        df[['timestamp', 'pod_name', 'upid', 'payload']]
+      
+      audio_criteria:
+        min_duration_ms: 500      # Half second of speech
+        energy_threshold: 0.3     # 30% of max amplitude
+        vad_mode: "ZeroCrossing"  # Fast, good for speech
+        frequency_range: [300, 3400]  # Telephony band
+      
+      sampling_rate: 10  # Check every 10th packet
+    
+    metadata_extraction:
+      header_offset: 0
+      protocol: 
+        Binary:
+          field_map:
+            - name: "envelope_type"
+              offset: 0
+              length: 2
+              encoding: "u16_be"
+            - name: "envelope_length"  
+              offset: 2
+              length: 2
+              encoding: "u16_be"
+      
+      id_patterns:
+        - pattern: "\\x00\\x42"  # Magic bytes before interval ID
+          id_type: "interval_id"
+          value_offset: 2
+          value_length: 36  # UUID length
+          
+        - pattern: "segmentId\":\"([a-f0-9-]{36})"  # JSON format
+          id_type: "segment_id"
+          value_offset: 0
+          value_length: 36
+    
+    correlation:
+      signature_ttl_seconds: 300  # 5 minutes
+      max_active_signatures: 1000
+      grouping_key: "interval_id"
+
+  - name: "transcription_latency"
+    enabled: true
+    # ... similar config for different measurement

@@ -1,6 +1,48 @@
 [package]
-name = "fsm-px"
+name = "audio-latency-sensor"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+# Core async runtime
+tokio = { version = "1.35", features = ["full"] }
+
+# gRPC for Pixie API
+tonic = "0.10"
+prost = "0.12"
+prost-types = "0.12"
+
+# Arrow for data processing
+arrow = "49.0"
+arrow-flight = "49.0"
+
+# Config and serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1.0"
+
+# Metrics
+prometheus = "0.13"
+lazy_static = "1.4"
+
+# Data structures
+dashmap = "5.5"
+uuid = { version = "1.6", features = ["v4"] }
+
+# Audio processing helpers
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+regex = "1.10"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+[build-dependencies]
+tonic-build = "0.10"
+
+[dev-dependencies]
+tokio-test = "0.4"
