@@ -1,0 +1,95 @@
+FROM ubuntu:22.04 AS bpf-builder
+
+# Install dependencies for BPF compilation
+RUN apt-get update && apt-get install -y \
+    clang-14 \
+    llvm-14 \
+    libbpf-dev \
+    linux-headers-generic \
+    make \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copy and compile BPF program
+COPY tc_audio_tracer.c .
+
+# Create a simple BPF compilation script
+RUN echo '#!/bin/bash\n\
+set -e\n\
+ARCH=$(uname -m)\n\
+echo "Building for $ARCH"\n\
+\n\
+if [ "$ARCH" = "x86_64" ]; then\n\
+    INCLUDE_PATH="/usr/include/x86_64-linux-gnu"\n\
+    TARGET_ARCH="__TARGET_ARCH_x86"\n\
+else\n\
+    INCLUDE_PATH="/usr/include/aarch64-linux-gnu"\n\
+    TARGET_ARCH="__TARGET_ARCH_arm64"\n\
+fi\n\
+\n\
+clang-14 -O2 -g -target bpf \\\n\
+    -D${TARGET_ARCH} \\\n\
+    -I${INCLUDE_PATH} \\\n\
+    -I/usr/include \\\n\
+    -c tc_audio_tracer.c -o tc_audio_tracer.o\n\
+' > compile.sh && chmod +x compile.sh
+
+RUN ./compile.sh
+
+# Go builder stage
+FROM golang:1.21-alpine AS go-builder
+
+RUN apk add --no-cache gcc musl-dev linux-headers
+
+WORKDIR /build
+
+# Copy go files
+COPY go.mod go.sum* ./
+RUN go mod download
+
+COPY tc_loader.go .
+
+# Build the loader as a static binary
+RUN CGO_ENABLED=0 go build -o tc_loader tc_loader.go
+
+# Final runtime stage
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y \
+    iproute2 \
+    file \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy compiled files
+COPY --from=bpf-builder /build/tc_audio_tracer.o ./
+COPY --from=go-builder /build/tc_loader .
+RUN chmod +x tc_loader
+
+# Create output directory
+RUN mkdir -p /output
+
+# Entry script
+RUN echo '#!/bin/bash\n\
+set -e\n\
+\n\
+echo "Starting TC eBPF audio tracer..."\n\
+echo "Architecture: $(uname -m)"\n\
+echo "Output: /output/tc_trace.csv"\n\
+\n\
+echo "Checking files:"\n\
+ls -la /app/\n\
+file /app/tc_loader || true\n\
+ldd /app/tc_loader || true\n\
+\n\
+# List interfaces\n\
+echo "Network interfaces:"\n\
+ip link show | grep -E "veth|cali|cni" || true\n\
+\n\
+# Run the loader\n\
+exec /app/tc_loader\n\
+' > /app/start.sh && chmod +x /app/start.sh
+
+ENTRYPOINT ["/app/start.sh"]

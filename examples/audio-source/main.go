@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -66,42 +65,67 @@ func (s *AudioServer) LoadAudio() error {
 	}
 	defer file.Close()
 
-	// Read WAV header
-	var header struct {
-		RiffID      [4]byte
-		Size        uint32
-		WaveID      [4]byte
-		FmtID       [4]byte
-		FmtSize     uint32
-		AudioFormat uint16
-		NumChannels uint16
-		SampleRate  uint32
-		ByteRate    uint32
-		BlockAlign  uint16
+	// Read RIFF header
+	var riffHeader struct {
+		ChunkID   [4]byte
+		ChunkSize uint32
+		Format    [4]byte
+	}
+	
+	if err := binary.Read(file, binary.LittleEndian, &riffHeader); err != nil {
+		return fmt.Errorf("failed to read RIFF header: %w", err)
+	}
+	
+	if string(riffHeader.ChunkID[:]) != "RIFF" || string(riffHeader.Format[:]) != "WAVE" {
+		return fmt.Errorf("not a valid WAV file")
+	}
+
+	// Process chunks to find fmt and data
+	var formatInfo struct {
+		AudioFormat   uint16
+		NumChannels   uint16
+		SampleRate    uint32
+		ByteRate      uint32
+		BlockAlign    uint16
 		BitsPerSample uint16
 	}
-
-	if err := binary.Read(file, binary.LittleEndian, &header); err != nil {
-		return fmt.Errorf("failed to read WAV header: %w", err)
-	}
-
-	// Skip to data chunk
+	
+	foundFormat := false
+	
+	// Look for chunks
 	for {
 		var chunkID [4]byte
 		var chunkSize uint32
 		
 		if err := binary.Read(file, binary.LittleEndian, &chunkID); err != nil {
+			if err == io.EOF {
+				return fmt.Errorf("data chunk not found")
+			}
 			return fmt.Errorf("failed to read chunk ID: %w", err)
 		}
 		if err := binary.Read(file, binary.LittleEndian, &chunkSize); err != nil {
 			return fmt.Errorf("failed to read chunk size: %w", err)
 		}
 		
-		if string(chunkID[:]) == "data" {
+		chunkIDStr := string(chunkID[:])
+		
+		if chunkIDStr == "fmt " {
+			// Read format info
+			if err := binary.Read(file, binary.LittleEndian, &formatInfo); err != nil {
+				return fmt.Errorf("failed to read format info: %w", err)
+			}
+			foundFormat = true
+			
+			// Skip any extra format bytes
+			extraBytes := int(chunkSize) - 16
+			if extraBytes > 0 {
+				file.Seek(int64(extraBytes), 1)
+			}
+		} else if chunkIDStr == "data" && foundFormat {
 			// Found data chunk
-			s.sampleRate = int(header.SampleRate)
-			s.channels = int(header.NumChannels)
-			s.sampleWidth = int(header.BitsPerSample / 8)
+			s.sampleRate = int(formatInfo.SampleRate)
+			s.channels = int(formatInfo.NumChannels)
+			s.sampleWidth = int(formatInfo.BitsPerSample / 8)
 			
 			// Read all audio data
 			audioData := make([]byte, chunkSize)
@@ -143,11 +167,11 @@ func (s *AudioServer) LoadAudio() error {
 				s.channels, s.sampleRate, s.sampleWidth*8, len(s.audioChunks), s.totalDurationMs)
 			
 			return nil
-		}
-		
-		// Skip chunk data
-		if _, err := file.Seek(int64(chunkSize), 1); err != nil {
-			return fmt.Errorf("failed to skip chunk: %w", err)
+		} else {
+			// Skip unknown chunks
+			if _, err := file.Seek(int64(chunkSize), 1); err != nil {
+				return fmt.Errorf("failed to skip chunk %s: %w", chunkIDStr, err)
+			}
 		}
 	}
 }

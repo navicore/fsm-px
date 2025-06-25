@@ -1,0 +1,108 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tc-bpf-script
+  namespace: default
+data:
+  install-tc.sh: |
+    #!/bin/bash
+    set -e
+    
+    echo "Finding network interfaces with our pods..."
+    
+    # Find interfaces for our pod IPs
+    AUDIO_IPS=$(kubectl get pods -n audio-demo -o jsonpath='{.items[*].status.podIP}')
+    echo "Audio pod IPs: $AUDIO_IPS"
+    
+    # Install tc filter on host interfaces
+    for iface in $(ip link | grep -E "veth|cali|cnio" | cut -d: -f2 | tr -d ' ' | grep -v '@'); do
+      echo "Checking interface: $iface"
+      
+      # Try to add tc qdisc (might already exist)
+      tc qdisc add dev $iface clsact 2>/dev/null || true
+      
+      # Simple packet counter for ports 8000-8001
+      tc filter add dev $iface ingress prio 1 protocol ip flower \
+        ip_proto tcp dst_port 8000-8001 \
+        action mirred egress redirect dev lo \
+        2>/dev/null || true
+    done
+    
+    echo "TC filters installed. Starting packet monitoring..."
+    
+    # Monitor with tcpdump on lo interface
+    tcpdump -i any -nn 'tcp port 8000 or tcp port 8001' -l | \
+      awk '{print systime() "," $0}' > /output/tc-trace.log
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: tc-bpf-tracer
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: tc-bpf-tracer
+  template:
+    metadata:
+      labels:
+        app: tc-bpf-tracer
+    spec:
+      hostNetwork: true
+      hostPID: true
+      containers:
+      - name: tracer
+        image: nicolaka/netshoot
+        command: ["/bin/bash", "/scripts/install-tc.sh"]
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["NET_ADMIN", "NET_RAW", "SYS_ADMIN"]
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        - name: output
+          mountPath: /output
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+      serviceAccountName: tc-tracer
+      volumes:
+      - name: scripts
+        configMap:
+          name: tc-bpf-script
+          defaultMode: 0755
+      - name: output
+        hostPath:
+          path: /var/log/audio-tracer
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tc-tracer
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tc-tracer
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tc-tracer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tc-tracer
+subjects:
+- kind: ServiceAccount
+  name: tc-tracer
+  namespace: default

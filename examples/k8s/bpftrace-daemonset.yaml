@@ -1,0 +1,137 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: audio-latency-tracer
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: audio-latency-tracer
+  template:
+    metadata:
+      labels:
+        app: audio-latency-tracer
+    spec:
+      hostNetwork: true
+      hostPID: true
+      containers:
+      - name: bpftrace
+        image: quay.io/iovisor/bpftrace:latest
+        command: ["/bin/sh"]
+        args:
+        - -c
+        - |
+          echo "Starting bpftrace audio latency tracer..."
+          # Ensure output directory exists
+          mkdir -p /output
+          # Run bpftrace with the script
+          exec bpftrace /scripts/audio-latency.bt 2>&1 | tee /output/trace.log
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        - name: output
+          mountPath: /output
+        - name: sys
+          mountPath: /sys
+          readOnly: true
+        - name: lib-modules
+          mountPath: /lib/modules
+          readOnly: true
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+      volumes:
+      - name: scripts
+        configMap:
+          name: bpftrace-scripts
+      - name: output
+        hostPath:
+          path: /var/log/audio-tracer
+          type: DirectoryOrCreate
+      - name: sys
+        hostPath:
+          path: /sys
+      - name: lib-modules
+        hostPath:
+          path: /lib/modules
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bpftrace-scripts
+  namespace: default
+data:
+  audio-latency.bt: |
+    #!/usr/bin/env bpftrace
+    
+    BEGIN {
+        printf("Starting audio interval_id tracer\n");
+        printf("timestamp_ns,pid,comm,event_type,details\n");
+    }
+    
+    // Trace socket operations with our ports
+    kretprobe:inet_accept {
+        $sk = (struct sock *)retval;
+        if ($sk != 0) {
+            $port = $sk->__sk_common.skc_num;
+            if ($port == 8000 || $port == 8001) {
+                printf("%lld,%d,%s,accept,port_%d\n", nsecs, pid, comm, $port);
+                @sockets[(uint64)$sk] = $port;
+            }
+        }
+    }
+    
+    // Trace data transmission
+    kprobe:tcp_sendmsg {
+        $sk = (struct sock *)arg0;
+        $size = arg2;
+        
+        if (@sockets[(uint64)$sk] != 0) {
+            $port = @sockets[(uint64)$sk];
+            if ($size > 400 && $size < 5000) {  // SSE event size range
+                printf("%lld,%d,%s,send_sse,port_%d_size_%d\n", 
+                       nsecs, pid, comm, $port, $size);
+                @sse_sends[$port]++;
+            }
+        }
+    }
+    
+    // Trace receives
+    kprobe:tcp_recvmsg {
+        $sk = (struct sock *)arg0;
+        
+        if (@sockets[(uint64)$sk] != 0) {
+            $port = @sockets[(uint64)$sk];
+            printf("%lld,%d,%s,recv,port_%d\n", nsecs, pid, comm, $port);
+            @receives[$port]++;
+        }
+    }
+    
+    // Monitor process activity
+    tracepoint:sched:sched_process_exec {
+        if (str(args->filename) == "/app/audio-source" || 
+            str(args->filename) == "/app/audio-relay") {
+            printf("%lld,%d,%s,exec,%s\n", nsecs, args->pid, comm, str(args->filename));
+        }
+    }
+    
+    // Stats every 5 seconds
+    interval:s:5 {
+        printf("# SSE sends: ");
+        print(@sse_sends);
+        printf("# Receives: ");
+        print(@receives);
+        @socket_count = count();
+        printf("# Active sockets: ");
+        print(@sockets);
+    }
+    
+    END {
+        clear(@sockets);
+        clear(@sse_sends);
+        clear(@receives);
+    }

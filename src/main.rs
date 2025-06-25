@@ -1,5 +1,7 @@
 mod config;
 mod signature_detector;
+mod bpftrace_reader;
+mod ebpf_processor;
 
 use config::MeasurementConfig;
 use signature_detector::{SignatureDetector, SignatureEvent};

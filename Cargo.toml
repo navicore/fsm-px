@@ -29,6 +29,9 @@ lazy_static = "1.4"
 dashmap = "5.5"
 uuid = { version = "1.6", features = ["v4"] }
 
+# File watching for bpftrace output
+notify = "4.0"
+
 # Audio processing helpers
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 regex = "1.10"

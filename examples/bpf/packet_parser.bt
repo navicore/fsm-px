@@ -1,0 +1,67 @@
+#!/usr/bin/env bpftrace
+
+/*
+ * Packet parser using raw tracepoints
+ * Attempts to extract interval_id from packet data
+ */
+
+#include <linux/skbuff.h>
+#include <linux/ip.h>
+#include <linux/tcp.h>
+#include <linux/if_ether.h>
+
+BEGIN {
+    printf("Packet parser for audio streams\n");
+    printf("timestamp_ns,src_ip,src_port,dst_ip,dst_port,tcp_flags,payload_len\n");
+}
+
+// Raw tracepoint gives us access to packet data
+tracepoint:net:netif_receive_skb {
+    $skb = (struct sk_buff *)args->skbaddr;
+    
+    // Check if it's an ethernet frame
+    $eth_hdr = (struct ethhdr *)($skb->data);
+    
+    // Only process IP packets
+    if ($eth_hdr->h_proto == 0x0800 || $eth_hdr->h_proto == 0x0008) {
+        $ip_hdr = (struct iphdr *)($skb->data + 14);  // ETH_HLEN = 14
+        
+        // Only process TCP
+        if ($ip_hdr->protocol == 6) {
+            $ip_hdr_len = ($ip_hdr->ihl & 0xF) * 4;
+            $tcp_hdr = (struct tcphdr *)($skb->data + 14 + $ip_hdr_len);
+            
+            // Extract ports (need byte swap)
+            $sport = (($tcp_hdr->source & 0xFF) << 8) | (($tcp_hdr->source >> 8) & 0xFF);
+            $dport = (($tcp_hdr->dest & 0xFF) << 8) | (($tcp_hdr->dest >> 8) & 0xFF);
+            
+            // Filter for our audio ports
+            if ($sport == 8000 || $sport == 8001 || $dport == 8000 || $dport == 8001) {
+                $tcp_hdr_len = (($tcp_hdr->doff >> 4) & 0xF) * 4;
+                $payload_offset = 14 + $ip_hdr_len + $tcp_hdr_len;
+                $payload_len = $skb->len - $payload_offset;
+                
+                // Only log packets with substantial payload (likely SSE events)
+                if ($payload_len > 100) {
+                    printf("%lld,%s,%d,%s,%d,%d,%d\n",
+                           nsecs,
+                           ntop(AF_INET, $ip_hdr->saddr), $sport,
+                           ntop(AF_INET, $ip_hdr->daddr), $dport,
+                           $tcp_hdr->fin | ($tcp_hdr->syn << 1) | ($tcp_hdr->rst << 2) | 
+                           ($tcp_hdr->psh << 3) | ($tcp_hdr->ack << 4),
+                           $payload_len);
+                    
+                    @packets_by_port[$dport]++;
+                }
+            }
+        }
+    }
+}
+
+interval:s:5 {
+    print(@packets_by_port);
+}
+
+END {
+    clear(@packets_by_port);
+}

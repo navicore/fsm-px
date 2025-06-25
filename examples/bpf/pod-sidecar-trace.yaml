@@ -1,0 +1,88 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trace-sidecar-script
+  namespace: audio-demo
+data:
+  trace.sh: |
+    #!/bin/bash
+    echo "Starting packet trace sidecar..."
+    
+    # Simple packet capture on localhost
+    tcpdump -i lo -nn -A -s0 'tcp port 8000 or tcp port 8001' 2>/dev/null | \
+    awk '
+    BEGIN { 
+        print "timestamp,port,interval_id,position" > "/output/sidecar_trace.csv"
+    }
+    /^[0-9]/ { 
+        time = $1
+        next
+    }
+    /"interval_id":"[^"]+/ {
+        match($0, /"interval_id":"([^"]+)"/, arr)
+        if (arr[1]) {
+            interval_id = arr[1]
+            if (match($0, /"position":([0-9]+)/, pos)) {
+                position = pos[1]
+            } else {
+                position = "0"
+            }
+            # Determine port from context
+            port = "unknown"
+            if (index($0, ":8000") > 0) port = "8000"
+            if (index($0, ":8001") > 0) port = "8001"
+            
+            print systime() "," port "," interval_id "," position >> "/output/sidecar_trace.csv"
+            fflush("/output/sidecar_trace.csv")
+        }
+    }
+    '
+---
+# Patch audio-source deployment to add sidecar
+apiVersion: v1
+kind: Service
+metadata:
+  name: trace-output
+  namespace: audio-demo
+spec:
+  type: NodePort
+  ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30088
+  selector:
+    app: trace-viewer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trace-viewer
+  namespace: audio-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trace-viewer
+  template:
+    metadata:
+      labels:
+        app: trace-viewer
+    spec:
+      containers:
+      - name: viewer
+        image: python:3.11-slim
+        command:
+        - python
+        - -m
+        - http.server
+        - "8080"
+        - --directory
+        - /output
+        volumeMounts:
+        - name: trace-output
+          mountPath: /output
+      volumes:
+      - name: trace-output
+        hostPath:
+          path: /var/log/audio-tracer
+          type: DirectoryOrCreate

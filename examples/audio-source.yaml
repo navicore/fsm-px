@@ -35,7 +35,7 @@ spec:
     spec:
       containers:
         - name: audio-server
-          image: audio-broadcast:latest
+          image: audio-source:latest
           imagePullPolicy: Never  # For local development
           ports:
             - containerPort: 8000

@@ -1,0 +1,72 @@
+#!/usr/bin/env bpftrace
+/*
+ * audio-latency.bt - Trace audio chunk flow between pods
+ * Captures HTTP SSE events containing interval_id and timestamps
+ */
+
+#include <linux/socket.h>
+#include <linux/tcp.h>
+
+BEGIN
+{
+    printf("Tracing audio chunks... Hit Ctrl-C to end.\n");
+    printf("%-20s %-15s %-15s %-36s %s\n", 
+           "TIME", "SRC", "DST", "INTERVAL_ID", "CHUNK_POS");
+}
+
+// Trace TCP receives (incoming data)
+kprobe:tcp_v4_do_rcv
+{
+    $sk = (struct sock *)arg0;
+    $dport = $sk->__sk_common.skc_dport;
+    $sport = $sk->__sk_common.skc_num;
+    
+    // Filter for our audio service ports (8000, 8001)
+    if ($dport == 8000 || $dport == 8001 || $sport == 8000 || $sport == 8001) {
+        @tcp_session[tid] = 1;
+        @src_port[tid] = $sport;
+        @dst_port[tid] = $dport;
+    }
+}
+
+// Trace socket receives to capture actual data
+kretprobe:sock_recvmsg
+{
+    if (@tcp_session[tid] == 1) {
+        $msg = (struct msghdr *)arg1;
+        $ret = retval;
+        
+        if ($ret > 0 && $ret < 4096) {
+            // Read the actual data
+            $buf = (char *)$msg->msg_iter.iov->iov_base;
+            
+            // Look for SSE data lines containing interval_id
+            if (str($buf, 6) == "data: ") {
+                // Extract interval_id from JSON (simplified - real impl would parse properly)
+                // Looking for pattern: "interval_id":"uuid-here"
+                $data_start = $buf + 6;
+                
+                printf("%-20llu %-15d %-15d ", elapsed / 1000000, 
+                       @src_port[tid], @dst_port[tid]);
+                       
+                // Store timestamp for interval_id
+                @chunk_seen[tid] = nsecs;
+                
+                // Print first 100 chars of data for debugging
+                printf("%.100s\n", str($data_start));
+            }
+        }
+        
+        delete(@tcp_session[tid]);
+        delete(@src_port[tid]);
+        delete(@dst_port[tid]);
+    }
+}
+
+END
+{
+    clear(@tcp_session);
+    clear(@src_port);
+    clear(@dst_port);
+    clear(@chunk_seen);
+}

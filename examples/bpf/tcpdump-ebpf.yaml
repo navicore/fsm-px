@@ -1,0 +1,145 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ebpf-tcpdump
+  namespace: default
+data:
+  capture.sh: |
+    #!/bin/bash
+    set -e
+    
+    echo "Starting eBPF-based packet capture for audio services"
+    
+    # Use tcpdump with BPF filter to capture and extract interval_ids
+    tcpdump -i any -nn -A -s0 'tcp port 8000 or tcp port 8001' 2>/dev/null | \
+    awk '
+    /^[0-9]/ { 
+        # Parse tcpdump timestamp and addresses
+        time = $1
+        gsub(":", "", time)
+        src = $3
+        dst = $5
+        next
+    }
+    /"interval_id":"[^"]+/ {
+        # Extract interval_id from packet data
+        match($0, /"interval_id":"([^"]+)"/, arr)
+        if (arr[1]) {
+            interval_id = arr[1]
+            # Extract position if present
+            if (match($0, /"position":([0-9]+)/, pos)) {
+                position = pos[1]
+            } else {
+                position = "unknown"
+            }
+            # Output CSV format
+            print systime() "," src "," dst "," interval_id "," position
+            fflush()
+        }
+    }
+    ' > /output/interval_trace.csv &
+    
+    # Also run a simple eBPF trace using bpftrace
+    cat > /tmp/simple_trace.bt << 'EOF'
+    #!/usr/bin/env bpftrace
+    
+    BEGIN {
+        printf("eBPF tracer started\n");
+        @start = nsecs;
+    }
+    
+    // Count packets by port
+    kprobe:tcp_sendmsg {
+        $sk = (struct sock *)arg0;
+        $port = $sk->__sk_common.skc_num;
+        if ($port == 8000 || $port == 8001) {
+            @sends[$port]++;
+            @last_send[$port] = nsecs;
+        }
+    }
+    
+    kprobe:tcp_recvmsg {
+        $sk = (struct sock *)arg0;
+        $port = $sk->__sk_common.skc_num;
+        if ($port == 8000 || $port == 8001) {
+            @recvs[$port]++;
+            if (@last_send[$port] > 0) {
+                $latency = (nsecs - @last_send[$port]) / 1000000; // ms
+                @latencies[$port] = hist($latency);
+            }
+        }
+    }
+    
+    interval:s:10 {
+        printf("\n=== Stats at %d seconds ===\n", (nsecs - @start) / 1000000000);
+        print(@sends);
+        print(@recvs);
+        print(@latencies);
+    }
+    
+    END {
+        clear(@sends);
+        clear(@recvs);
+        clear(@latencies);
+        clear(@last_send);
+        clear(@start);
+    }
+    EOF
+    
+    bpftrace /tmp/simple_trace.bt 2>&1 | tee -a /output/bpf_stats.log &
+    
+    # Keep container running
+    echo "Packet capture started. Outputs:"
+    echo "  - /output/interval_trace.csv - interval_id captures"
+    echo "  - /output/bpf_stats.log - eBPF statistics"
+    
+    # Monitor output
+    while true; do
+        sleep 30
+        echo "=== Capture stats ==="
+        wc -l /output/interval_trace.csv 2>/dev/null || echo "No captures yet"
+        tail -5 /output/interval_trace.csv 2>/dev/null || true
+    done
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ebpf-tcpdump
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: ebpf-tcpdump
+  template:
+    metadata:
+      labels:
+        app: ebpf-tcpdump
+    spec:
+      hostNetwork: true
+      containers:
+      - name: capture
+        image: quay.io/iovisor/bpftrace:latest
+        command: ["/bin/bash", "/scripts/capture.sh"]
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["NET_ADMIN", "NET_RAW", "SYS_ADMIN"]
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        - name: output
+          mountPath: /output
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+      volumes:
+      - name: scripts
+        configMap:
+          name: ebpf-tcpdump
+          defaultMode: 0755
+      - name: output
+        hostPath:
+          path: /var/log/audio-tracer
+          type: DirectoryOrCreate

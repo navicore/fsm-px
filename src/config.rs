@@ -13,10 +13,10 @@ pub struct MeasurementConfig {
 pub struct SignatureRules {
     /// PxL filter to identify candidate streams
     pub stream_filter: String,
-    
+
     /// Audio detection criteria
     pub audio_criteria: AudioCriteria,
-    
+
     /// How often to sample (every N packets)
     pub sampling_rate: u32,
 }
@@ -25,13 +25,13 @@ pub struct SignatureRules {
 pub struct AudioCriteria {
     /// Minimum audio duration in ms to consider
     pub min_duration_ms: u32,
-    
+
     /// Energy threshold (0.0 - 1.0) to detect speech
     pub energy_threshold: f32,
-    
+
     /// Voice activity detection mode
     pub vad_mode: VadMode,
-    
+
     /// Optional frequency range for speech detection
     pub frequency_range: Option<(f32, f32)>,
 }
@@ -52,10 +52,10 @@ pub enum VadMode {
 pub struct MetadataExtraction {
     /// Packet offset where metadata typically appears
     pub header_offset: usize,
-    
+
     /// Pattern to find UUID/segment ID
     pub id_patterns: Vec<IdPattern>,
-    
+
     /// Protocol-specific parsing
     pub protocol: ProtocolType,
 }
@@ -64,13 +64,13 @@ pub struct MetadataExtraction {
 pub struct IdPattern {
     /// Regex or byte pattern
     pub pattern: String,
-    
+
     /// What type of ID this represents
     pub id_type: String, // "interval_id", "segment_id", "call_id"
-    
+
     /// Byte offset from pattern match
     pub value_offset: i32,
-    
+
     /// Length of the ID value
     pub value_length: usize,
 }
@@ -99,10 +99,10 @@ pub struct FieldMapping {
 pub struct CorrelationConfig {
     /// How long to keep signatures in memory
     pub signature_ttl_seconds: u64,
-    
+
     /// Maximum concurrent measurements
     pub max_active_signatures: usize,
-    
+
     /// How to group related measurements
     pub grouping_key: String, // e.g., "interval_id"
 }

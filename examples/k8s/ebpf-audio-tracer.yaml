@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ebpf-audio-tracer
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: ebpf-audio-tracer
+  template:
+    metadata:
+      labels:
+        app: ebpf-audio-tracer
+    spec:
+      hostNetwork: true
+      hostPID: true
+      containers:
+      - name: tracer
+        image: ebpf-audio-tracer:latest
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          privileged: true
+          capabilities:
+            add:
+            - NET_ADMIN
+            - NET_RAW
+            - SYS_ADMIN
+            - SYS_RESOURCE
+        volumeMounts:
+        - name: output
+          mountPath: /output
+        - name: sys
+          mountPath: /sys
+        - name: lib-modules  
+          mountPath: /lib/modules
+          readOnly: true
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        resources:
+          requests:
+            cpu: 100m
+            memory: 100Mi
+          limits:
+            cpu: 200m
+            memory: 200Mi
+      volumes:
+      - name: output
+        hostPath:
+          path: /var/log/audio-tracer
+          type: DirectoryOrCreate
+      - name: sys
+        hostPath:
+          path: /sys
+      - name: lib-modules
+        hostPath:
+          path: /lib/modules
+---
+# Build job to create the image locally
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: build-ebpf-tracer
+  namespace: default
+spec:
+  template:
+    spec:
+      containers:
+      - name: docker
+        image: docker:dind
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: docker-sock
+          mountPath: /var/run/docker.sock
+        - name: bpf-src
+          mountPath: /src
+        command:
+        - sh
+        - -c
+        - |
+          cd /src
+          docker build -t ebpf-audio-tracer:latest .
+          echo "Build complete"
+      volumes:
+      - name: docker-sock
+        hostPath:
+          path: /var/run/docker.sock
+      - name: bpf-src
+        hostPath:
+          path: /Users/navicore/git/navicore/fsm-px/examples/bpf
+      restartPolicy: Never

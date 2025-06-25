@@ -1,0 +1,73 @@
+#!/usr/bin/env bpftrace
+
+/*
+ * Extract interval_id from SSE events
+ * This uses uprobes on the Go binary to intercept HTTP writes
+ */
+
+BEGIN {
+    printf("Tracing HTTP writes for interval_ids...\n");
+    printf("timestamp,pid,comm,interval_id\n");
+}
+
+// Trace write syscalls from our audio processes
+tracepoint:syscalls:sys_enter_write {
+    if (comm == "audio-source" || comm == "audio-relay") {
+        @trace[tid] = 1;
+        @fd[tid] = args->fd;
+        @buf[tid] = args->buf;
+        @count[tid] = args->count;
+    }
+}
+
+tracepoint:syscalls:sys_exit_write {
+    if (@trace[tid] == 1) {
+        $fd = @fd[tid];
+        $buf = @buf[tid];
+        $count = @count[tid];
+        
+        // Only process reasonable sized writes (SSE events)
+        if (args->ret > 400 && args->ret < 5000) {
+            // Try to read the buffer content
+            $data = str($buf, 200);
+            
+            // Look for "interval_id":" pattern
+            if (strcontains($data, "interval_id")) {
+                printf("%lld,%d,%s,found_interval_id_in_%d_bytes\n", 
+                       nsecs, pid, comm, args->ret);
+                
+                // Count by process
+                @interval_writes[comm]++;
+            }
+        }
+        
+        delete(@trace[tid]);
+        delete(@fd[tid]);
+        delete(@buf[tid]);
+        delete(@count[tid]);
+    }
+}
+
+// Also trace at socket level
+kprobe:tcp_sendmsg {
+    $sk = (struct sock *)arg0;
+    $port = $sk->__sk_common.skc_num;
+    
+    if ($port == 8000 || $port == 8001) {
+        @socket_sends[comm]++;
+    }
+}
+
+interval:s:10 {
+    print(@interval_writes);
+    print(@socket_sends);
+}
+
+END {
+    clear(@trace);
+    clear(@fd);
+    clear(@buf);
+    clear(@count);
+    clear(@interval_writes);
+    clear(@socket_sends);
+}

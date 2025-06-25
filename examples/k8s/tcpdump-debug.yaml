@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tcpdump-debug
+  namespace: audio-demo
+spec:
+  containers:
+  - name: tcpdump
+    image: nicolaka/netshoot
+    command: ["/bin/sh"]
+    args:
+    - -c
+    - |
+      echo "Capturing traffic on port 8000 and 8001..."
+      tcpdump -i any -nn 'port 8000 or port 8001' -A
+    securityContext:
+      capabilities:
+        add: ["NET_ADMIN", "NET_RAW"]
+  hostNetwork: true
+  nodeSelector:
+    kubernetes.io/hostname: audio-latency-demo-worker2  # Same node as relay pod
