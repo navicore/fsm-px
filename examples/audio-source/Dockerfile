@@ -1,16 +1,30 @@
-FROM python:3.11-slim
+FROM golang:1.21-alpine AS builder
 
 WORKDIR /app
 
-# Install dependencies
-RUN pip install --no-cache-dir aiohttp
+# Copy go mod files (we'll create them next)
+COPY go.mod go.sum* ./
+RUN go mod download
 
-# Copy the server code
-COPY audio-loop-server.py .
+# Copy source code
+COPY main.go .
 
-# Copy the voice audio file
+# Build the application
+RUN go build -o audio-source main.go
+
+# Final stage
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /app
+
+# Copy the binary from builder
+COPY --from=builder /app/audio-source .
+
+# Copy the audio file
 COPY final_notice.wav audio.wav
 
 EXPOSE 8000
 
-CMD ["python", "audio-loop-server.py"]
+CMD ["./audio-source"]

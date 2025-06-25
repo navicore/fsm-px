@@ -1,13 +1,27 @@
-FROM python:3.11-slim
+FROM golang:1.21-alpine AS builder
 
 WORKDIR /app
 
-# Install dependencies
-RUN pip install --no-cache-dir aiohttp aiohttp-sse-client
+# Copy go mod files
+COPY go.mod go.sum* ./
+RUN go mod download
 
-# Copy the relay server code
-COPY audio-relay-server.py .
+# Copy source code
+COPY main.go .
+
+# Build the application
+RUN go build -o audio-relay main.go
+
+# Final stage
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /app
+
+# Copy the binary from builder
+COPY --from=builder /app/audio-relay .
 
 EXPOSE 8001
 
-CMD ["python", "audio-relay-server.py"]
+CMD ["./audio-relay"]
