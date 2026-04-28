@@ -1,3 +1,8 @@
+<!-- ghmig:moved -->
+> **This repository has moved to [https://git.navicore.tech/navicore/fsm-px](https://git.navicore.tech/navicore/fsm-px).**
+>
+> The GitHub copy is archived and no longer maintained.
+
 # Audio Latency Measurement System (fsm-px)
 
 A distributed system for measuring audio processing latency across Kubernetes pods using Pixie's eBPF instrumentation. This project helps identify where multi-second latency is introduced in audio streaming pipelines.
